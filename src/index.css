@@ -1,3 +1,54 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-slate-900 font-sans text-white antialiased;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-3xl bg-white/10 shadow-lg shadow-black/10 ring-1 ring-inset ring-white/20 backdrop-blur-xl;
+  }
+
+  .section-title {
+    @apply flex items-center gap-2 text-sm font-medium text-white/80;
+  }
+}
+
+@layer utilities {
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
+
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(255 255 255 / 0.3) transparent;
+  }
+
+  .stars {
+    background-image: radial-gradient(1px 1px at 8% 12%, #fff 50%, transparent 51%),
+      radial-gradient(1px 1px at 23% 28%, #fff 50%, transparent 51%),
+      radial-gradient(1.5px 1.5px at 37% 8%, #fff 50%, transparent 51%),
+      radial-gradient(1px 1px at 52% 22%, #fff 50%, transparent 51%),
+      radial-gradient(1px 1px at 66% 6%, #fff 50%, transparent 51%),
+      radial-gradient(1.5px 1.5px at 78% 31%, #fff 50%, transparent 51%),
+      radial-gradient(1px 1px at 91% 15%, #fff 50%, transparent 51%),
+      radial-gradient(1px 1px at 14% 44%, #fff 50%, transparent 51%),
+      radial-gradient(1px 1px at 44% 39%, #fff 50%, transparent 51%),
+      radial-gradient(1.5px 1.5px at 85% 48%, #fff 50%, transparent 51%),
+      radial-gradient(1px 1px at 61% 54%, #fff 50%, transparent 51%),
+      radial-gradient(1px 1px at 30% 62%, #fff 50%, transparent 51%);
+  }
+}

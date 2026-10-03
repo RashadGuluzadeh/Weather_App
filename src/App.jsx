@@ -1,156 +1,190 @@
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import Background from "./components/Background";
+import CurrentWeather from "./components/CurrentWeather";
+import DailyForecast from "./components/DailyForecast";
+import Header from "./components/Header";
+import HourlyForecast from "./components/HourlyForecast";
+import RecentSearches from "./components/RecentSearches";
+import SearchBar from "./components/SearchBar";
+import { EmptyState, ErrorState, LoadingState } from "./components/States";
+import WeatherDetails from "./components/WeatherDetails";
+import { useNow } from "./hooks/useNow";
+import { usePersistentState } from "./hooks/usePersistentState";
+import { fetchWeather } from "./lib/api";
+import { detectLang, translate } from "./lib/i18n";
+import { addRecent, gpsLocation, isLocation, placeName, removeRecent, sameLocation } from "./lib/locations";
+import { SettingsProvider } from "./lib/settings";
+import { buildForecast, formatTemp, getCondition, getTheme } from "./lib/weather";
 
-const Api_key = "0a04ccfa0ddfc0ebe0e43474a7040c89";
+const STALE_AFTER_MS = 10 * 60 * 1000;
+
+const isLang = (v) => v === "az" || v === "en";
+const isUnits = (v) => v === "metric" || v === "imperial";
+const isLocationList = (v) => Array.isArray(v) && v.every(isLocation);
+const isLocationOrNull = (v) => v === null || isLocation(v);
 
 const App = () => {
-  const inputRef = useRef(null);
-  const [apiData, setApiData] = useState(null);
-  const [showWeather, setShowWeather] = useState(null);
+  const [lang, setLang] = usePersistentState("hava:lang", detectLang, isLang);
+  const [units, setUnits] = usePersistentState("hava:units", "metric", isUnits);
+  const [recents, setRecents] = usePersistentState("hava:recents", [], isLocationList);
+  const [location, setLocation] = usePersistentState("hava:location", null, isLocationOrNull);
+  const [weather, setWeather] = useState({ status: "idle", data: null, error: null });
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [locating, setLocating] = useState(false);
+  const [geoError, setGeoError] = useState(null);
+  const now = useNow(30_000);
 
-  const [loading, setLoading] = useState(false);
+  // Refetch only when the coordinates change, not when the stored name is updated.
+  const locationKey = location ? `${location.lat},${location.lon}` : null;
 
-  const WeatherTypes = [
-    {
-      type: "Clear",
-      img: "https://cdn-icons-png.flaticon.com/512/6974/6974833.png",
-    },
-    {
-      type: "Rain",
-      img: "https://cdn-icons-png.flaticon.com/512/3351/3351979.png",
-    },
-    {
-      type: "Snow",
-      img: "https://cdn-icons-png.flaticon.com/512/642/642102.png",
-    },
-    {
-      type: "Clouds",
-      img: "https://cdn-icons-png.flaticon.com/512/414/414825.png",
-    },
-    {
-      type: "Haze",
-      img: "https://cdn-icons-png.flaticon.com/512/1197/1197102.png",
-    },
-    {
-      type: "Smoke",
-      img: "https://cdn-icons-png.flaticon.com/512/4380/4380458.png",
-    },
-    {
-      type: "Mist",
-      img: "https://cdn-icons-png.flaticon.com/512/4005/4005901.png",
-    },
-    {
-      type: "Drizzle",
-      img: "https://cdn-icons-png.flaticon.com/512/3076/3076129.png",
-    },
-  ];
-  const fetchWeather = async () => {
-    const URL = `https://api.openweathermap.org/data/2.5/weather?q=${inputRef.current.value}&units=metric&appid=${Api_key}`;
-    setLoading(true);
-    fetch(URL)
-      .then((res) => res.json())
+  useEffect(() => {
+    if (!location) return undefined;
+    const controller = new AbortController();
+    setWeather((prev) => ({ ...prev, status: "loading", error: null }));
+    fetchWeather(location, lang, controller.signal)
       .then((data) => {
-        setApiData(null);
-        if (data.cod == 404 || data.cod == 400) {
-          // ARRAY OF OBJ
-          setShowWeather([
-            {
-              type: "Not Found",
-              img: "https://cdn-icons-png.flaticon.com/512/4275/4275497.png",
-            },
-          ]);
-        }
-        setShowWeather(
-          WeatherTypes.filter(
-            (weather) => weather.type === data.weather[0].main
-          )
+        setWeather({ status: "success", data: { ...data, location }, error: null });
+        setRecents((prev) =>
+          addRecent(prev, {
+            ...location,
+            name: location.name || data.current.name,
+            country: location.country || data.current.sys.country,
+          })
         );
-        console.log(data);
-        setApiData(data);
-        setLoading(false);
       })
-      .catch((err) => {
-        console.log(err);
-        setLoading(false);
+      .catch((error) => {
+        if (error.name !== "AbortError") setWeather((prev) => ({ ...prev, status: "error", error }));
       });
-  };
-  // const handleChange = (event) => {
-  //   setMessage(event.target.value);
-  // };
-  const handleKeyDown = (event) => {
-    if(event.key === 'Enter') {
-      fetchWeather()
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locationKey, lang, refreshKey]);
+
+  const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
+
+  // Coming back to a tab with old data triggers a refresh.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && weather.data && Date.now() - weather.data.fetchedAt > STALE_AFTER_MS) {
+        refresh();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [weather.data, refresh]);
+
+  const selectLocation = useCallback(
+    (next) => {
+      setGeoError(null);
+      setLocation(next);
+    },
+    [setLocation]
+  );
+
+  const locate = useCallback(() => {
+    if (!("geolocation" in navigator)) {
+      setGeoError({ code: "geoUnavailable" });
+      return;
     }
+    setLocating(true);
+    setGeoError(null);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setLocating(false);
+        setLocation(gpsLocation(position.coords));
+      },
+      (err) => {
+        setLocating(false);
+        setGeoError({ code: err.code === err.PERMISSION_DENIED ? "geoDenied" : "geoUnavailable" });
+      },
+      { timeout: 10_000, maximumAge: STALE_AFTER_MS }
+    );
+  }, [setLocation]);
+
+  const data = weather.data;
+  const hasData = !!data && sameLocation(data.location, location);
+  const forecast = useMemo(() => (data ? buildForecast(data.current, data.forecast) : null), [data]);
+  const theme = hasData ? getTheme(getCondition(data.current.weather[0].id, data.current.weather[0].icon)) : "default";
+
+  useEffect(() => {
+    document.documentElement.lang = lang;
+  }, [lang]);
+
+  useEffect(() => {
+    const appName = translate(lang, "appName");
+    document.title = hasData
+      ? `${placeName(location, data.current, lang)} ${formatTemp(data.current.main.temp, units)} · ${appName}`
+      : appName;
+  }, [hasData, data, location, lang, units]);
+
+  let content;
+  if (!location) {
+    content = <EmptyState onSelect={selectLocation} onLocate={locate} locating={locating} />;
+  } else if (hasData) {
+    content = (
+      <div key={locationKey} className="space-y-4 motion-safe:animate-fade-in-up">
+        {weather.status === "error" && <ErrorState compact error={weather.error} onRetry={refresh} />}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
+          <CurrentWeather
+            className="lg:col-span-3 lg:row-start-1"
+            current={data.current}
+            location={location}
+            today={forecast.daily[0]}
+            fetchedAt={data.fetchedAt}
+            now={now}
+            refreshing={weather.status === "loading"}
+            onRefresh={refresh}
+          />
+          <HourlyForecast className="lg:col-span-5" items={forecast.hourly} tz={data.current.timezone} />
+          <DailyForecast
+            className="lg:col-span-2 lg:col-start-4 lg:row-start-1"
+            days={forecast.daily}
+            range={forecast.range}
+            tz={data.current.timezone}
+            currentTemp={data.current.main.temp}
+          />
+          <WeatherDetails className="lg:col-span-5" current={data.current} now={now} />
+        </div>
+      </div>
+    );
+  } else if (weather.status === "error") {
+    content = <ErrorState error={weather.error} onRetry={refresh} />;
+  } else {
+    content = <LoadingState />;
   }
 
   return (
-    <div className="bg-gray-800 h-screen grid place-items-center">
-      <div className="bg-white w-96 p-4 rounded-md">
-        <div className="flex items-center justify-between">
-          <input
-            onKeyDown={handleKeyDown}
-            type="text"
-            ref={inputRef}
-            placeholder="Enter Your Location"
-            className="text-xl border-b
-          p-1 border-gray-200 font-semibold outline-none flex-1"
+    <SettingsProvider lang={lang} units={units}>
+      <Background theme={theme} />
+      <div className="relative min-h-screen">
+        <div className="mx-auto flex min-h-screen max-w-5xl flex-col px-4 pb-6 pt-3 sm:px-6 sm:pt-5">
+          <Header onLangChange={setLang} onUnitsChange={setUnits} />
+          <SearchBar onSelect={selectLocation} onLocate={locate} locating={locating} />
+          <RecentSearches
+            items={recents}
+            current={location}
+            onSelect={selectLocation}
+            onRemove={(loc) => setRecents((prev) => removeRecent(prev, loc))}
           />
-          <button onClick={fetchWeather}>
-            <img
-              src="https://cdn-icons-png.flaticon.com/512/758/758651.png"
-              alt="..."
-              className="w-8"
-            />
-          </button>
-        </div>
-        <div
-          className={`duration-300 delay-75  overflow-hidden
-         ${showWeather ? "h-[27rem]" : "h-0"}`}
-        >
-          {loading ? (
-            <div className="grid place-items-center h-full">
-              <img
-                src="https://cdn-icons-png.flaticon.com/512/1477/1477009.png"
-                alt="..."
-                className="w-14 mx-auto mb-2 animate-spin"
-              />
+          {geoError && (
+            <div className="mt-3">
+              <ErrorState compact error={geoError} onDismiss={() => setGeoError(null)} />
             </div>
-          ) : (
-            showWeather && (
-              <div className="text-center flex flex-col gap-6 mt-10">
-                {apiData && (
-                  <p className="text-xl font-semibold">
-                    {apiData?.name + "," + apiData?.sys?.country}
-                  </p>
-                )}
-                <img
-                  src={showWeather[0]?.img}
-                  alt="..."
-                  className="w-52 mx-auto"
-                />
-                <h3 className="text-2xl font-bold text-zinc-800">
-                  {showWeather[0]?.type}
-                </h3>
-
-                {apiData && (
-                  <>
-                    <div className="flex justify-center">
-                      <img
-                        src="https://cdn-icons-png.flaticon.com/512/7794/7794499.png"
-                        alt="..."
-                        className="h-9 mt-1"
-                      />
-                      <h2 className="text-4xl font-extrabold">
-                        {apiData?.main?.temp}&#176;C
-                      </h2>
-                    </div>
-                  </>
-                )}
-              </div>
-            )
           )}
+          <main className="mt-6 flex-1">{content}</main>
+          <footer className="mt-10 text-center text-xs text-white/60">
+            {translate(lang, "dataBy")}{" "}
+            <a
+              href="https://openweathermap.org/"
+              target="_blank"
+              rel="noreferrer"
+              className="underline underline-offset-2 hover:text-white"
+            >
+              OpenWeatherMap
+            </a>
+          </footer>
         </div>
       </div>
-    </div>
+    </SettingsProvider>
   );
 };
 
